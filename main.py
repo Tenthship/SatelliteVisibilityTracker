@@ -86,19 +86,24 @@ dt_list = [start_dt + timedelta(minutes=m) for m in range(1440)]
 times = ts.from_datetimes(dt_list)
 
 # loop through all tle data and extract all information to be stored in data frame
+# (keeping your original indexing; adding a guard so it doesn't crash if the file doesn't match)
 for i in range(0, len(lines), 6):
-    name = lines[i]
-    tle_1 = lines[i + 2]
-    tle_2 = lines[i + 4]
+    try:
+        name = lines[i]
+        tle_1 = lines[i + 2]
+        tle_2 = lines[i + 4]
 
-    tle_1_line_number, tle_1_satellite_number, tle_1_classification, tle_1_international_designator, tle_1_epoch_year, tle_1_epoch_day, tle_1_first_derivative, tle_1_second_derivative, tle_1_bstar_drag, tle_1_ephemeris_type, tle_1_element_set_number, tle_1_checksum = parse_tle1(tle_1)
-    tle_2_line_number, tle_2_satellite_number, tle_2_inclination, tle_2_raan, tle_2_eccentricity, tle_2_arg_perigee, tle_2_mean_anomaly, tle_2_mean_motion, tle_2_rev_number, tle_2_checksum = parse_tle2(tle_2)
+        # parse calls left as-is (even though you don't use most fields yet)
+        parse_tle1(tle_1)
+        parse_tle2(tle_2)
 
-    data.append({
-        "name": name,
-        "tle_1": tle_1,
-        "tle_2": tle_2,
-    })
+        data.append({
+            "name": name,
+            "tle_1": tle_1,
+            "tle_2": tle_2,
+        })
+    except IndexError:
+        break
 
 observation_data = []
 alts = []
@@ -133,72 +138,23 @@ for t in times:
         max_alt = 0
         passes.append(pass_data)
         pass_data = {}
-    
+
 print("tracking:", data[0]["name"])
 print("alt range (deg):", min(alts), "->", max(alts))
 
 passes_df = pd.DataFrame(passes)
 print(passes_df)
 
-    # for d in data:
-    #     satellite = EarthSatellite(d["tle_1"], d["tle_2"], d["name"], ts)
-    #     difference = satellite - observer
-    #     topocentric = difference.at(t)
-
-    #     alt, az, distance = topocentric.altaz()
-    #     observation_data.append({
-    #         "name": d["name"],
-    #         "timestamp": t.utc_datetime,
-    #         "altitude_deg": alt.degrees,
-    #         "azimuth_deg": az.degrees,
-    #         "range_km": distance.km,
-    #         "visible": alt.degrees > 10
-    #     })
-
-
-    # print(f'Elevation: {alt.degrees:.2f} degrees')
-    # if alt.degrees > 0:
-    #     print('The satellite is above the horizon')
-
 time_list = [t.utc_datetime() for t in times]
 
-# observation_df = pd.DataFrame(observation_data)
-# print(observation_df)
+# --- LIVE SKY DOME (ALL SATS, COLOR CHANGES WHEN VISIBLE) ---
 
-
-
-# Create Altitude vs Time Plot
-# fig, ax = plt.subplots()
-# ax.plot(time_list, alts, linewidth=1)
-
-# ax.set_xlabel("Time (UTC)")
-# ax.set_ylabel("Altitude (deg)")
-# ax.set_title(f"Altitude vs Time: {data[0]['name']}")
-
-# # readable time axis
-# ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-# ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-# fig.autofmt_xdate()
-
-# # make sure y-scale shows the action
-# ax.set_ylim(-90, 90)
-
-# plt.show()
-
-
-
+ani = None  # keep animation alive
 
 def create_figure():
-    time_now = ts.now()
-    topocentric = (satellite - observer).at(time_now)
-    alt, az, distance = topocentric.altaz()
-    print(alt.degrees)
-    print(az.degrees)
+    global ani
+
     fig, ax = plt.subplots()
-    r = (90 - alt.degrees) / 90
-    theta = math.radians(az.degrees)
-    x = r * math.sin(theta)
-    y = r * math.cos(theta)
 
     north = 1
     east = 1
@@ -231,10 +187,49 @@ def create_figure():
     ax.set_yticks([])
     ax.set_facecolor("black")
     ax.set_aspect('equal')
-    ax.set_title('Matplotlib Circle Patch')
+    ax.set_title('Matplotlib Circle Patch', color="white")
 
-    ax.scatter(x, y)
+    # Build all satellite objects once
+    satellites = [EarthSatellite(d["tle_1"], d["tle_2"], d["name"], ts) for d in data]
 
+    # One scatter artist for all satellites
+    dots = ax.scatter([0]*len(satellites), [0]*len(satellites), s=18)
+
+    # Status HUD (so you can tell it's updating even if nothing is visible)
+    status = ax.text(0, 0, "", color="white", ha="center", va="center")
+
+    def update(frame):
+        t_now = ts.now()
+        offsets = []
+        colors = []
+        visible = 0
+
+        for sat in satellites:
+            topocentric = (sat - observer).at(t_now)
+            alt, az, distance = topocentric.altaz()
+
+            # Always plot position on dome
+            r = (90 - alt.degrees) / 90
+            theta = math.radians(az.degrees)
+            x = r * math.sin(theta)
+            y = r * math.cos(theta)
+
+            offsets.append([x, y])
+
+            # Color changes when visible
+            if alt.degrees >= 0:
+                colors.append("yellow")   # visible
+                visible += 1
+            else:
+                colors.append("gray")     # below horizon
+
+        dots.set_offsets(offsets)
+        dots.set_color(colors)
+        status.set_text(f"UTC {t_now.utc_datetime().strftime('%H:%M:%S')} | visible: {visible}")
+
+        return dots, status
+
+    ani = FuncAnimation(fig, update, interval=200, blit=False)
     plt.show()
 
 create_figure()
